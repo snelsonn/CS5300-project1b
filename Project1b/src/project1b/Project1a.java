@@ -18,25 +18,12 @@ import javax.servlet.http.HttpServletResponse;
 @WebServlet("/project1a")
 public class Project1a extends HttpServlet {
 	
-	static class Message {
-		public String sessionID;
-		public int version;
-		public String message;
-		public int expirationTimeStamp;
-		
-		public Message(String sessionID,
-					   int version,
-					   String message,
-					   int expirationTimeStamp){
-			this.sessionID = sessionID;
-			this.version = version;
-			this.message = message;
-			this.expirationTimeStamp = expirationTimeStamp;
-		}
+	public Project1a(){
+		(new Server()).start();
 	}
-
+	
+	public static final ConcurrentHashMap<String, Session> sessionTable = new ConcurrentHashMap<String, Session>();
 	private static final String cookieName = "CS5300PROJ1SESSION";
-	private static final ConcurrentHashMap<String, Message> sessionTable = new ConcurrentHashMap<String, Message>();
 	private static final String defaultMessage = "Hello User";
 	private static final int defaultExpirationTime = 60 * 1; //1 min
 	private static final int defaultVersionNumber = 1;
@@ -63,7 +50,7 @@ public class Project1a extends HttpServlet {
 		  String sessionID = makeUniqueId();
 		  String cookieValue = sessionID + "%" + defaultVersionNumber + "%" + servletName;
 		  Cookie newVisitor = new Cookie(cookieName, cookieValue);
-		  addToConcurrentHashMap(sessionTable, new Message(sessionID,
+		  addToConcurrentHashMap(sessionTable, new Session(sessionID,
 				  								 defaultVersionNumber,
 				  								 defaultMessage,
 				  								(int)(System.currentTimeMillis()/1000) + defaultExpirationTime));
@@ -82,7 +69,7 @@ public class Project1a extends HttpServlet {
 		  if(newMessage != null){
 			  newMessage = newMessage.replaceAll("[^A-Za-z0-9.-_ ?]", "");
 		  }
-		  Message m = sessionTable.get(sessionMessage[0]);
+		  Session m = sessionTable.get(sessionMessage[0]);
 		  //determine if message exists and is below 512 char
 		  //if not use the old message
 		  if(newMessage != null && !newMessage.equals("") && newMessage.length() <= 512){
@@ -93,7 +80,7 @@ public class Project1a extends HttpServlet {
 		  
 		  Cookie newCookieForRepeatVisitor = new Cookie(cookieName, cookieValue);
 		  newCookieForRepeatVisitor.setMaxAge(defaultExpirationTime); //1 min
-		  addToConcurrentHashMap(sessionTable, new Message(sessionMessage[0],
+		  addToConcurrentHashMap(sessionTable, new Session(sessionMessage[0],
 				  								 Integer.parseInt(sessionMessage[1]) + 1,
 					 							 message,
 					 							 (int)(System.currentTimeMillis()/1000) + defaultExpirationTime));
@@ -131,8 +118,8 @@ public class Project1a extends HttpServlet {
   }
   
   //check all sessions in sessionTable, if they are passed the default ExpirationTime, remove that kv-pair
-  public static void garbageCollect(ConcurrentHashMap<String, Message> sessionTable){
-	  for(Entry<String, Message> session : sessionTable.entrySet()){
+  public static void garbageCollect(ConcurrentHashMap<String, Session> sessionTable){
+	  for(Entry<String, Session> session : sessionTable.entrySet()){
 		  if(session.getValue().expirationTimeStamp < (int)(System.currentTimeMillis()/1000)){
 			  sessionTable.remove(session.getKey());
 		  }
@@ -143,7 +130,7 @@ public class Project1a extends HttpServlet {
 	    return new BigInteger(130, new SecureRandom()).toString(32);
 	  }
   
-  public static void addToConcurrentHashMap(ConcurrentHashMap<String, Message> sessionTable, Message message){
+  public static void addToConcurrentHashMap(ConcurrentHashMap<String, Session> sessionTable, Session message){
 	  sessionTable.put(message.sessionID, message);
   }
   

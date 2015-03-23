@@ -12,26 +12,34 @@ import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.HashMap;
 
-public class Server {
+public class Server extends Thread{
 
 	private static final int portProj1bRPC = 5300;
 	private static final int operationSESSIONREAD = 6;
 	private static final int operationSESSIONWRITE = 7;
 	private static final int operationSESSIONEXCHANGEVIEWS = 8;
 	private static final int maxSizePacket = 512;
-
-
-	public static void main(String[] args){
-		DatagramSocket rpcSocket = new DatagramSocket(portProj1bRPC);
+	
+	@Override
+	public void run(){
+		DatagramSocket rpcSocket = null;
+		try {
+			rpcSocket = new DatagramSocket(portProj1bRPC);
+		} catch (SocketException e1) {
+			e1.printStackTrace();
+		}
 		while(true) {
 			byte[] inBuf = new byte[maxSizePacket];
 			DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
-			rpcSocket.receive(recvPkt);
+			try {
+				rpcSocket.receive(recvPkt);
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
 			InetAddress returnAddr = recvPkt.getAddress();
 			int returnPort = recvPkt.getPort();
-			if()
+			int operationCode = getOperationCode(recvPkt.getData()); // get requested operationCode
 			// here inBuf contains the callID and operationCode
-			int operationCode = recvPkt.getData()[32]; // get requested operationCode
 			byte[] outBuf = null;
 			switch( operationCode ) {
 				//1. compare to see if you contain information about current session from cookie, so either primary or backup server
@@ -46,19 +54,30 @@ public class Server {
 			
 				case operationSESSIONREAD:
 					// SessionRead accepts call args and returns call results 
-					outBuf = SessionRead();
+					outBuf = ResponseToSessionRead(recvPkt.getData());
 					break;
 				
 				case operationSESSIONWRITE:
-					outBuf = ResponseToSessionWrite(recvPkt.getdata(), recvPkt.getLength());
+					outBuf = ResponseToSessionWrite(recvPkt.getData());
 					break;
 				
 				case operationSESSIONEXCHANGEVIEWS:
+					break;
+				
+				default:
+					System.out.println("ERROR occurred, no operation code");
+					break;
+						
 			}
 			// here outBuf should contain the callID and results of the call
 			DatagramPacket sendPkt = new DatagramPacket(outBuf, outBuf.length,
 					returnAddr, returnPort);
-			rpcSocket.send(sendPkt);
+			try {
+				rpcSocket.send(sendPkt);
+			} catch(IOException ioe) {
+				ioe.printStackTrace();
+				rpcSocket.close();
+			}
 		}
 	}
 
@@ -69,9 +88,11 @@ public class Server {
 		DatagramSocket rpcSocket = new DatagramSocket();
 		byte[] outBuf = new byte[maxSizePacket];
 
-		//		fill outBuf with [ callID, operationSESSIONREAD, sessionID ]
+		// fill outBuf with [ callID, operationSESSIONREAD, sessionID ]
 		String callID = makeUniqueId();
-		String outBufferInfo = callID + operationSESSIONREAD + sessionID;
+		String outBufferInfo = callID + "_"
+							   + operationSESSIONREAD + "_"
+							   + sessionID;
 		int i = 0;
 		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
 			outBuf[i] = c;
@@ -85,16 +106,11 @@ public class Server {
 		rpcSocket.send(sendPkt);
 		byte[] inBuf = new byte[maxSizePacket];
 		DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
-		byte[] recvPktCallID = new byte[callID.length()];
 		try {
 			do {
 				recvPkt.setLength(inBuf.length);
 				rpcSocket.receive(recvPkt);
-				byte[] recvPktData = recvPkt.getData();
-				for(int callIDIndex = 0; callIDIndex < callID.length(); callIDIndex++){
-					recvPktCallID[callIDIndex] = recvPktData[callIDIndex];
-				}
-			} while(Arrays.equals(callID.getBytes(), recvPktCallID));
+			} while(!callID.equals(getCallID(recvPkt.getData())));
 		} catch(SocketTimeoutException stoe) {
 			// timeout 
 			recvPkt = null;
@@ -103,6 +119,28 @@ public class Server {
 		}
 		rpcSocket.close();
 		return recvPkt;
+	}
+	
+	//send data back in response to sessionRead
+	//callID + session.version + session.message
+	public byte[] ResponseToSessionRead(byte[] requestData){
+		String callID = getCallID(requestData);
+		String sessionID = getSessionID(requestData);
+		
+		Session session = Project1a.sessionTable.get(sessionID);
+
+		//should only need version and message, because expiration time will be reset and sessionID is already known
+		String outBufferInfo = callID + "_"
+							   + session.version + "_"
+							   + session.message;
+		byte[] outBuf = new byte[maxSizePacket];
+		int i = 0;
+		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
+			outBuf[i] = c;
+			i++;
+		}
+
+		return outBuf;
 	}
 
 	public DatagramPacket SessionWrite(String sessionID, int version, int expirationTime, String data) throws IOException {
@@ -111,9 +149,14 @@ public class Server {
 		DatagramSocket rpcSocket = new DatagramSocket();
 		byte[] outBuf = new byte[maxSizePacket];
 
-		//fill outBuf with [ callID, operationSESSIONWRITE, sessionID ]
+		//fill outBuf with [ callID, operationSESSIONWRITE, sessionID, version, expirationTime, data ]
 		String callID = makeUniqueId();
-		String outBufferInfo = callID + operationSESSIONWRITE + sessionID + version + expirationTime + data;
+		String outBufferInfo = callID + "_"
+							   + operationSESSIONWRITE + "_"
+							   + sessionID + "_" 
+							   + version + "_" 
+							   + expirationTime + "_"
+							   + data;
 		int i = 0;
 		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
 			outBuf[i] = c;
@@ -127,16 +170,11 @@ public class Server {
 		rpcSocket.send(sendPkt);
 		byte[] inBuf = new byte[maxSizePacket];
 		DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
-		byte[] recvPktCallID = new byte[callID.length()];
 		try {
 			do {
 				recvPkt.setLength(inBuf.length);
 				rpcSocket.receive(recvPkt);
-				byte[] recvPktData = recvPkt.getData();
-				for(int callIDIndex = 0; callIDIndex < callID.length(); callIDIndex++){
-					recvPktCallID[callIDIndex] = recvPktData[callIDIndex];
-				}
-			} while(Arrays.equals(callID.getBytes(), recvPktCallID));
+			} while(!callID.equals(getCallID(recvPkt.getData())));
 		} catch(SocketTimeoutException stoe) {
 			// timeout 
 			recvPkt = null;
@@ -146,6 +184,29 @@ public class Server {
 		rpcSocket.close();
 		return recvPkt;
 	}
+	
+	//send data back in response to sessionWrite
+	//callID + Acknowledged
+	public byte[] ResponseToSessionWrite(byte[] requestData) {
+		//make sure session constructor works with requestData and delimiter "_"
+		Session session = new Session(requestData);
+		
+		//write session to local sessionTable
+		Project1a.sessionTable.put(session.sessionID, session);
+		
+		//return datagramPacket acknowledging the write
+		String callID = getCallID(requestData);
+		byte[] outBuf = new byte[maxSizePacket];
+		//fill outBuf with [ callID, "acknowledged" ]
+		String outBufferInfo = callID + "acknowledged";
+		int i = 0;
+		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
+			outBuf[i] = c;
+			i++;
+		}
+		
+		return outBuf;
+	}
 
 	public void ExchangeViews(HashMap<String, String> v) {
 
@@ -153,5 +214,19 @@ public class Server {
 
 	public static String makeUniqueId() {
 		return new BigInteger(130, new SecureRandom()).toString(32);
+	}
+	
+	public static String getCallID(byte[] requestData){
+		return new String(requestData).trim().substring(0, 32);
+	}
+	
+	public static int getOperationCode(byte[] requestData){
+		String request = new String(requestData).trim();
+		return Integer.parseInt(request.split("_")[1]);
+	}
+	
+	public static String getSessionID(byte[] requestData){
+		String request = new String(requestData).trim();
+		return request.split("_")[2];
 	}
 }
