@@ -15,8 +15,8 @@ import java.util.HashMap;
 public class Server extends Thread{
 
 	private static final int portProj1bRPC = 5300;
-	private static final int operationSESSIONREAD = 6;
-	private static final int operationSESSIONWRITE = 7;
+	private static final int operationSESSIONREAD = 192384;
+	private static final int operationSESSIONWRITE = 192385;
 	private static final int operationSESSIONEXCHANGEVIEWS = 8;
 	private static final int maxSizePacket = 512;
 	
@@ -110,6 +110,7 @@ public class Server extends Thread{
 			do {
 				recvPkt.setLength(inBuf.length);
 				rpcSocket.receive(recvPkt);
+				System.out.println("sessionread finish");
 			} while(!callID.equals(getCallID(recvPkt.getData())));
 		} catch(SocketTimeoutException stoe) {
 			// timeout 
@@ -128,11 +129,18 @@ public class Server extends Thread{
 		String sessionID = getSessionID(requestData);
 		
 		Session session = Project1a.sessionTable.get(sessionID);
-
-		//should only need version and message, because expiration time will be reset and sessionID is already known
-		String outBufferInfo = callID + "_"
-							   + session.version + "_"
-							   + session.message;
+		
+		String outBufferInfo;
+		if(session == null){
+			outBufferInfo = callID + "_"
+					        + "not found";
+		} else{
+			//should only need version and message, because expiration time will be reset and sessionID is already known
+			outBufferInfo = callID + "_"
+								   + "found" + "_"
+								   + session.version + "_"
+								   + session.message;
+		}
 		byte[] outBuf = new byte[maxSizePacket];
 		int i = 0;
 		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
@@ -157,6 +165,7 @@ public class Server extends Thread{
 							   + version + "_" 
 							   + expirationTime + "_"
 							   + data;
+		System.out.println("sessioWrite outBufferInfo: " + outBufferInfo);
 		int i = 0;
 		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
 			outBuf[i] = c;
@@ -174,12 +183,22 @@ public class Server extends Thread{
 			do {
 				recvPkt.setLength(inBuf.length);
 				rpcSocket.receive(recvPkt);
+				System.out.println("got packet back");
 			} while(!callID.equals(getCallID(recvPkt.getData())));
 		} catch(SocketTimeoutException stoe) {
 			// timeout 
 			recvPkt = null;
 		} catch(IOException ioe) {
-			// other error 
+			System.out.println("IOException, trying to resend once more");
+			try {
+				do {
+					recvPkt.setLength(inBuf.length);
+					rpcSocket.receive(recvPkt);
+				} while(!callID.equals(getCallID(recvPkt.getData())));
+			} catch(SocketTimeoutException stoe) {
+				// timeout 
+				recvPkt = null;
+			}
 		}
 		rpcSocket.close();
 		return recvPkt;
@@ -191,6 +210,8 @@ public class Server extends Thread{
 		//make sure session constructor works with requestData and delimiter "_"
 		Session session = new Session(requestData);
 		
+		System.out.println("In ResponseToSessionWrite");
+		
 		//write session to local sessionTable
 		Project1a.sessionTable.put(session.sessionID, session);
 		
@@ -198,7 +219,7 @@ public class Server extends Thread{
 		String callID = getCallID(requestData);
 		byte[] outBuf = new byte[maxSizePacket];
 		//fill outBuf with [ callID, "acknowledged" ]
-		String outBufferInfo = callID + "acknowledged";
+		String outBufferInfo = callID;
 		int i = 0;
 		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
 			outBuf[i] = c;
@@ -217,7 +238,8 @@ public class Server extends Thread{
 	}
 	
 	public static String getCallID(byte[] requestData){
-		return new String(requestData).trim().substring(0, 32);
+		String request = new String(requestData).trim();
+		return request.split("_")[0];
 	}
 	
 	public static int getOperationCode(byte[] requestData){
