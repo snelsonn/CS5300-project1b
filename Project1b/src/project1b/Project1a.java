@@ -32,6 +32,7 @@ public class Project1a extends HttpServlet {
 		(new GarbageCollector()).start();
 		
 		try {
+			// change later to not local address
 			servletName = InetAddress.getLocalHost().getHostAddress();
 		} catch (UnknownHostException e) {
 			e.printStackTrace();
@@ -136,6 +137,7 @@ public class Project1a extends HttpServlet {
 			  if(readResponse != null){
 				  String[] readResponseData = new String(readResponse.getData()).trim().split("_");
 				  //not found means session Timedout
+				  // TODO Update views table with status DOWN
 				  if(readResponseData[1].equals("found")){
 					  //check that the version numbers are the same, if not session error
 					  if(readResponseData[2].equals(sessionMessage[1])){
