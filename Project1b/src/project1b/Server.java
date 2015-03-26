@@ -1,6 +1,8 @@
 package project1b;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.math.BigInteger;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -10,6 +12,7 @@ import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -20,6 +23,24 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import project1b.Project1a.GarbageCollector;
 
+import com.amazonaws.AmazonClientException;
+import com.amazonaws.AmazonServiceException;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.regions.Region;
+import com.amazonaws.regions.Regions;
+import com.amazonaws.services.simpledb.*;
+import com.amazonaws.services.simpledb.model.Attribute;
+import com.amazonaws.services.simpledb.model.CreateDomainRequest;
+import com.amazonaws.services.simpledb.model.DomainMetadataRequest;
+import com.amazonaws.services.simpledb.model.DomainMetadataResult;
+import com.amazonaws.services.simpledb.model.GetAttributesRequest;
+import com.amazonaws.services.simpledb.model.GetAttributesResult;
+import com.amazonaws.services.simpledb.model.PutAttributesRequest;
+import com.amazonaws.services.simpledb.model.ReplaceableAttribute;
+
+import java.util.List;
+
+
 public class Server extends Thread {
 
 	private static final int portProj1bRPC = 5300;
@@ -28,8 +49,12 @@ public class Server extends Thread {
 	private static final int operationSESSIONEXCHANGEVIEWS = 8;
 	private static final int maxSizePacket = 512;
 	public static final ConcurrentHashMap<String, View> viewTable = new ConcurrentHashMap<String, View>();
-	public static final Random r = new Random();
+	private static final Random r = new Random();
 	private static ViewThread viewThread;
+	private static AmazonSimpleDB simpleDB;
+	private static String awsAccessId = "AKIAIH4YZPHV7S45LIEQ";
+	private static String awsSecretKey = "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";
+	private static String ownAddr;
 	
 	public Server(){
 		viewThread = new ViewThread();
@@ -44,6 +69,38 @@ public class Server extends Thread {
 		} catch (SocketException e1) {
 			e1.printStackTrace();
 		}
+		
+		// Create new simpleDB Object
+		BasicAWSCredentials basicAWSCredentials = new BasicAWSCredentials(awsAccessId, awsSecretKey);
+		simpleDB = new AmazonSimpleDBClient(basicAWSCredentials);
+		Region usWest2 = Region.getRegion(Regions.US_WEST_2);
+		simpleDB.setRegion(usWest2);
+		
+		Process p;
+		try {
+			p = Runtime.getRuntime().exec("/opt/aws/bin/ec2-metadata --public-ipv4");
+			int returnCode = p.waitFor();
+			if (returnCode == 0) {
+				BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+				String ipStr = r.readLine();
+				ownAddr = ipStr.split(":")[1].trim();
+			}
+		} catch (IOException | InterruptedException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+		
+		try {
+			String myDomain = "simpleDB";
+			simpleDB.createDomain(new CreateDomainRequest(myDomain));
+			View simpleDBView = new View("simpleDB");
+			viewTable.put("simpleDB", simpleDBView);
+		} catch (AmazonServiceException ase) {
+			System.out.println("Service Exception");
+		} catch (AmazonClientException ace) {
+			System.out.println("Client Exception");
+		}
+		
 		while(true) {
 			byte[] inBuf = new byte[maxSizePacket];
 			DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
@@ -53,13 +110,6 @@ public class Server extends Thread {
 				e.printStackTrace();
 			}
 			InetAddress returnAddr = recvPkt.getAddress();
-			String ownAddr = "";
-			try {
-				ownAddr = InetAddress.getLocalHost().toString();
-			} catch (UnknownHostException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
 			
 			// update own svrId in viewTable since svr is currently running
 			// need to change to not local host later
@@ -156,8 +206,8 @@ public class Server extends Thread {
 		//send out DatagramPacket to each destAddress or server with sessionID
 		//fix destination id: not InetAddress.getLocalHost()
 		//but need to look up actual server location from session table which uses sessionID as key
-		InetAddress destAddress = InetAddress.getLocalHost();
-		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destAddress, portProj1bRPC);
+		InetAddress[] destAddress = getDestinationAddr();
+		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destAddress[0], portProj1bRPC);
 		rpcSocket.send(sendPkt);
 		byte[] inBuf = new byte[maxSizePacket];
 		DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
@@ -231,8 +281,8 @@ public class Server extends Thread {
 		//send out DatagramPacket to each destAddress or server with sessionID
 		//fix destination id: not InetAddress.getLocalHost()
 		//but need to look up actual server location from session table which uses sessionID as key
-		InetAddress destAddress = InetAddress.getLocalHost();
-		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destAddress, portProj1bRPC);
+		InetAddress[] destAddress = getDestinationAddr();
+		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destAddress[0], portProj1bRPC);
 		rpcSocket.send(sendPkt);
 		byte[] inBuf = new byte[maxSizePacket];
 		DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
@@ -241,7 +291,6 @@ public class Server extends Thread {
 				recvPkt.setLength(inBuf.length);
 				rpcSocket.receive(recvPkt);
 				System.out.println("got packet back");
-				// Should we also be writing to our local HashTable too??????????
 			} while(!callID.equals(getCallID(recvPkt.getData())));
 		} catch(SocketTimeoutException stoe) {
 			// timeout 
@@ -381,47 +430,72 @@ public class Server extends Thread {
 		// randomly pick a server from viewTable
 		int j = r.nextInt(viewTable.size());
 		String destAddressStr =  (String) viewTable.entrySet().toArray()[j];
-		InetAddress destAddress = InetAddress.getByName(destAddressStr);
 		
-		// formulate packet to send that we want to exchange views
-		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destAddress, portProj1bRPC);
-		rpcSocket.send(sendPkt);
-		
-		// set up receive packet 
-		byte[] inBuf = new byte[maxSizePacket];
-		DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
-		int viewTableLen = 0;
-		
-		// get packet saying how long dest server's viewTable is		
-		try {
-			do {
-				recvPkt.setLength(inBuf.length);
-				rpcSocket.receive(recvPkt);
-				System.out.println("got packet length back");
-				
-				// get the number of packets we should be receiving
-				String request = new String(recvPkt.getData()).trim();
-				viewTableLen = Integer.parseInt(request.split("_")[1]);
-				
-			} while(!callID.equals(getCallID(recvPkt.getData())));
-		} catch(SocketTimeoutException stoe) {
-			// timeout 
-			viewTable.replace(destAddress.toString(), viewTable.get(destAddress.toString()).updateDOWNTime());
-			recvPkt = null;
-		} catch(IOException ioe) {
-			System.out.println("IOException, trying to resend once more");
-		}
-				
-		// if packet says how long dest viewTable is
-		// that means dest server is responding
-		// so first send all your packets 
-		// and then keep receiving packets 
-		// and merge with curr viewTable
-		if (recvPkt != null) {
-			sendViewPackets(callID, rpcSocket, destAddress, portProj1bRPC);
+		if (destAddressStr.equals("simpleDB")) {
+			//DomainMetadataRequest dmreq = new DomainMetadataRequest().withDomainName("simpleDB");
+			//DomainMetadataResult meta = simpleDB.domainMetadata(dmreq);
+			GetAttributesRequest gar = new GetAttributesRequest();
+			gar.setDomainName("simpleDB");
+			List<Attribute> simpleDBAttrs = simpleDB.getAttributes(gar).getAttributes();
+			View otherView;
+			String[] simpleDBVal;
 			
-			// start receiving packets
-			receiveViewPackets(callID, destAddress.toString(), viewTableLen, rpcSocket);
+			for (Attribute attr : simpleDBAttrs) {
+				simpleDBVal = attr.getValue().split("_");
+				otherView = new View(simpleDBVal[0], Integer.parseInt(simpleDBVal[1]), Long.parseLong(simpleDBVal[2]));
+				
+				if (!viewTable.contains(otherView.svrId)) {
+					viewTable.put(otherView.svrId, otherView); 
+				} else if (viewTable.get(simpleDBVal[0]).getTime().compareTo(otherView.getTime()) < 0) {
+					viewTable.replace(otherView.svrId, otherView);
+				}
+			}
+			
+			sendViewPacketsSimpleDB();
+			
+		} else {
+		
+			InetAddress destAddress = InetAddress.getByName(destAddressStr);
+			
+			// formulate packet to send that we want to exchange views
+			DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destAddress, portProj1bRPC);
+			rpcSocket.send(sendPkt);
+			
+			// set up receive packet 
+			byte[] inBuf = new byte[maxSizePacket];
+			DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
+			int viewTableLen = 0;
+		
+			// get packet saying how long dest server's viewTable is		
+			try {
+				do {
+					recvPkt.setLength(inBuf.length);
+					rpcSocket.receive(recvPkt);
+					System.out.println("got packet length back");
+						// get the number of packets we should be receiving
+						String request = new String(recvPkt.getData()).trim();
+						viewTableLen = Integer.parseInt(request.split("_")[1]);
+					
+				} while(!callID.equals(getCallID(recvPkt.getData())));
+			} catch(SocketTimeoutException stoe) {
+				// timeout 
+				viewTable.replace(destAddress.toString(), viewTable.get(destAddress.toString()).updateDOWNTime());
+				recvPkt = null;
+			} catch(IOException ioe) {
+				System.out.println("IOException, trying to resend once more");
+			}
+					
+			// if packet says how long dest viewTable is
+			// that means dest server is responding
+			// so first send all your packets 
+			// and then keep receiving packets 
+			// and merge with curr viewTable
+			if (recvPkt != null) {
+				sendViewPackets(callID, rpcSocket, destAddress, portProj1bRPC);
+				
+				// start receiving packets
+				receiveViewPackets(callID, destAddress.toString(), viewTableLen, rpcSocket);
+			}
 		}
 		
 		rpcSocket.close();
@@ -453,6 +527,22 @@ public class Server extends Thread {
 			
 		}
 	}
+	
+	public static void sendViewPacketsSimpleDB() {
+		Set<Entry<String, View>> viewTableKeys = viewTable.entrySet();
+		List<ReplaceableAttribute> sendInfo = new ArrayList<ReplaceableAttribute>();
+		ReplaceableAttribute a;
+
+		for (Entry<String, View> entry : viewTableKeys) {
+			a = new ReplaceableAttribute(entry.getKey(), entry.getValue().toString(), true);
+			sendInfo.add(a);
+		}
+		
+		PutAttributesRequest par = new PutAttributesRequest();
+		par.setDomainName("simpleDB");
+		par.setAttributes(sendInfo);
+		simpleDB.putAttributes(par);
+	}
 
 	public static String makeUniqueId() {
 		return new BigInteger(130, new SecureRandom()).toString(32);
@@ -479,4 +569,21 @@ public class Server extends Thread {
 		return (int) Math.ceil(viewTable.size() / numViewsInPacket);
 	}
 	
+	public static InetAddress[] getDestinationAddr() {
+		String cookieMetadata = Project1a.repeatVisitor.getValue();
+		InetAddress primaryID;
+		InetAddress backupID;
+		try {
+			primaryID = InetAddress.getByName(cookieMetadata.split("_")[3]);
+			backupID = InetAddress.getByName(cookieMetadata.split("_")[4]);
+			InetAddress[] destAddr = {primaryID, backupID};
+			return destAddr;
+		} catch (UnknownHostException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+		return null;
+		 
+	}
 }

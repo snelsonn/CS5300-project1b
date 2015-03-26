@@ -15,7 +15,6 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-
 @WebServlet("/project1a")
 public class Project1a extends HttpServlet {
 	
@@ -46,6 +45,7 @@ public class Project1a extends HttpServlet {
 	private static final String defaultMessage = "Hello User";
 	private static final int defaultExpirationTime = 60 * 1; //1 min
 	private static final int defaultVersionNumber = 1;
+	public static Cookie repeatVisitor;
 
   @Override
   public void doGet(HttpServletRequest request,
@@ -55,7 +55,7 @@ public class Project1a extends HttpServlet {
 	  
 	  // find cookie if it exists
 	  Cookie[] cookies = request.getCookies();
-	  Cookie repeatVisitor = null;
+	  repeatVisitor = null;
 	  if(cookies != null){
 		  for(Cookie c : cookies){
 			  if(c.getName().equals(cookieName)){
