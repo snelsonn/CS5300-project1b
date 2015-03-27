@@ -13,32 +13,24 @@ import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.security.SecureRandom;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Enumeration;
-import java.util.HashMap;
+import java.util.List;
 import java.util.Map.Entry;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
-import project1b.Project1a.GarbageCollector;
 
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.AmazonServiceException;
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.regions.Region;
 import com.amazonaws.regions.Regions;
-import com.amazonaws.services.simpledb.*;
+import com.amazonaws.services.simpledb.AmazonSimpleDB;
+import com.amazonaws.services.simpledb.AmazonSimpleDBClient;
 import com.amazonaws.services.simpledb.model.Attribute;
 import com.amazonaws.services.simpledb.model.CreateDomainRequest;
-import com.amazonaws.services.simpledb.model.DomainMetadataRequest;
-import com.amazonaws.services.simpledb.model.DomainMetadataResult;
 import com.amazonaws.services.simpledb.model.GetAttributesRequest;
-import com.amazonaws.services.simpledb.model.GetAttributesResult;
 import com.amazonaws.services.simpledb.model.PutAttributesRequest;
 import com.amazonaws.services.simpledb.model.ReplaceableAttribute;
-
-import java.util.List;
 
 
 public class Server extends Thread {
@@ -48,17 +40,32 @@ public class Server extends Thread {
 	private static final int operationSESSIONWRITE = 192385;
 	private static final int operationSESSIONEXCHANGEVIEWS = 8;
 	private static final int maxSizePacket = 512;
-	public static final ConcurrentHashMap<String, View> viewTable = new ConcurrentHashMap<String, View>();
+	public static ConcurrentHashMap<String, View> viewTable;
 	private static final Random r = new Random();
 	private static ViewThread viewThread;
-	private static AmazonSimpleDB simpleDB;
+	private static String ownAddr;
+	public static AmazonSimpleDB simpleDB;
 	private static String awsAccessId = "AKIAIH4YZPHV7S45LIEQ";
 	private static String awsSecretKey = "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";
-	private static String ownAddr;
+	private static String simpleDBDomain = "simpleDB";
 	
 	public Server(){
+		viewTable = new ConcurrentHashMap<String, View>();
 		viewThread = new ViewThread();
 		viewThread.start();
+		
+		// Add self to viewTable
+		ownAddr = getOwnServerID();	
+		viewTable.put(ownAddr, new View(ownAddr));
+
+		// Start simpleDB instance
+		BasicAWSCredentials basicAWSCredentials = new BasicAWSCredentials(awsAccessId, awsSecretKey);
+		simpleDB = new AmazonSimpleDBClient(basicAWSCredentials);
+		
+		// Add simpleDB to viewTable
+		simpleDB.createDomain(new CreateDomainRequest(simpleDBDomain));
+		View simpleDBView = new View("simpleDB");
+		viewTable.put("simpleDB", simpleDBView);
 	}
 	
 	@Override
@@ -70,37 +77,6 @@ public class Server extends Thread {
 			e1.printStackTrace();
 		}
 		
-		// Create new simpleDB Object
-		BasicAWSCredentials basicAWSCredentials = new BasicAWSCredentials(awsAccessId, awsSecretKey);
-		simpleDB = new AmazonSimpleDBClient(basicAWSCredentials);
-		Region usWest2 = Region.getRegion(Regions.US_WEST_2);
-		simpleDB.setRegion(usWest2);
-		
-		Process p;
-		try {
-			p = Runtime.getRuntime().exec("/opt/aws/bin/ec2-metadata --public-ipv4");
-			int returnCode = p.waitFor();
-			if (returnCode == 0) {
-				BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
-				String ipStr = r.readLine();
-				ownAddr = ipStr.split(":")[1].trim();
-			}
-		} catch (IOException | InterruptedException e1) {
-			// TODO Auto-generated catch block
-			e1.printStackTrace();
-		}
-		
-		try {
-			String myDomain = "simpleDB";
-			simpleDB.createDomain(new CreateDomainRequest(myDomain));
-			View simpleDBView = new View("simpleDB");
-			viewTable.put("simpleDB", simpleDBView);
-		} catch (AmazonServiceException ase) {
-			System.out.println("Service Exception");
-		} catch (AmazonClientException ace) {
-			System.out.println("Client Exception");
-		}
-		
 		while(true) {
 			byte[] inBuf = new byte[maxSizePacket];
 			DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
@@ -109,28 +85,25 @@ public class Server extends Thread {
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
+			
 			InetAddress returnAddr = recvPkt.getAddress();
 			
 			// update own svrId in viewTable since svr is currently running
 			// need to change to not local host later
-			if (viewTable.containsKey(ownAddr)) {
-				View curr_view = viewTable.get(ownAddr);
-				curr_view.updateUPTime();
-				viewTable.replace(ownAddr,curr_view);
-			} else { // not in own viewTable, create new View object 
-				viewTable.put(ownAddr, new View(ownAddr));
-			}
+			View curr_view = viewTable.get(ownAddr);
+			curr_view.updateUPTime();
+			viewTable.replace(ownAddr,curr_view);
 
 			// update return svrId in viewTable since we are interacting with it
 			// convert InetAddress to String for viewTable
-			String returnAddrStr = returnAddr.toString();
+			String returnAddrStr = returnAddr.toString().replaceAll("[^\\d.]", "");
 			
 			if (viewTable.containsKey(returnAddrStr)) {
 				View curr_addr = viewTable.get(returnAddrStr);
 				curr_addr.updateUPTime();
 				viewTable.replace(returnAddrStr,curr_addr);
 			} else {
-				viewTable.put(returnAddrStr, new View(ownAddr));
+				viewTable.put(returnAddrStr, new View(returnAddrStr));
 			}
 
 			
@@ -169,8 +142,9 @@ public class Server extends Thread {
 					break;
 						
 			}
-
+			rpcSocket.close();
 		}
+
 	}
 	
 	public static void sendDatagramPacket(DatagramSocket rpcSocket, byte[] outBuf, InetAddress returnAddr, int returnPort) {
@@ -181,12 +155,11 @@ public class Server extends Thread {
 			rpcSocket.send(sendPkt);
 		} catch(IOException ioe) {
 			ioe.printStackTrace();
-			rpcSocket.close();
 		}
 	}
 
 	// can only get this from cookie
-	public DatagramPacket SessionRead(String sessionID) throws IOException{
+	public DatagramPacket SessionRead(String sessionID, InetAddress destinationAddr) throws IOException{
 		//should return <found_version, data>
 		//generate unique id for call
 		DatagramSocket rpcSocket = new DatagramSocket();
@@ -206,11 +179,11 @@ public class Server extends Thread {
 		//send out DatagramPacket to each destAddress or server with sessionID
 		//fix destination id: not InetAddress.getLocalHost()
 		//but need to look up actual server location from session table which uses sessionID as key
-		InetAddress[] destAddress = getDestinationAddr();
-		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destAddress[0], portProj1bRPC);
+		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destinationAddr, portProj1bRPC);
 		rpcSocket.send(sendPkt);
 		byte[] inBuf = new byte[maxSizePacket];
 		DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
+		rpcSocket.setSoTimeout(5 * 1000);
 		try {
 			do {
 				recvPkt.setLength(inBuf.length);
@@ -219,10 +192,34 @@ public class Server extends Thread {
 			} while(!callID.equals(getCallID(recvPkt.getData())));
 		} catch(SocketTimeoutException stoe) {
 			// timeout
-			viewTable.replace(destAddress.toString(), viewTable.get(destAddress.toString()).updateDOWNTime());
-			recvPkt = null;
+			String destinationAddrStr = destinationAddr.toString().replaceAll("[^\\d.]", "");
+			if (viewTable.contains(destinationAddrStr))
+				viewTable.replace(destinationAddrStr, viewTable.get(destinationAddrStr).updateDOWNTime());
+			else {
+				viewTable.put(destinationAddrStr, new View(destinationAddrStr, 1));
+			}
+			recvPkt.setLength(20);
 		} catch(IOException ioe) {
 			// other error 
+			System.out.println("IOException, trying to resend once more");
+			try {
+				do {
+					recvPkt.setLength(inBuf.length);
+					rpcSocket.receive(recvPkt);
+					System.out.println("sessionread finish");
+				} while(!callID.equals(getCallID(recvPkt.getData())));
+			} catch(SocketTimeoutException stoe) {
+				// timeout
+				String destinationAddrStr = destinationAddr.toString().replaceAll("[^\\d.]", "");
+				if (viewTable.contains(destinationAddrStr))
+					viewTable.replace(destinationAddrStr, viewTable.get(destinationAddrStr).updateDOWNTime());
+				else {
+					viewTable.put(destinationAddrStr, new View(destinationAddrStr, 1));
+				}
+				recvPkt = null;
+			} catch(IOException ioe2) {
+				// other error 
+			}
 		}
 		rpcSocket.close();
 		return recvPkt;
@@ -243,9 +240,10 @@ public class Server extends Thread {
 		} else{
 			//should only need version and message, because expiration time will be reset and sessionID is already known
 			outBufferInfo = callID + "_"
-								   + "found" + "_"
-								   + session.version + "_"
-								   + session.message;
+							+ "found" + "_"
+							+ session.version + "_"
+							+ session.message
+							+ session.expirationTimeStamp;
 		}
 		byte[] outBuf = new byte[maxSizePacket];
 		int i = 0;
@@ -257,7 +255,7 @@ public class Server extends Thread {
 		return outBuf;
 	}
 
-	public DatagramPacket SessionWrite(String sessionID, int version, int expirationTime, String data) throws IOException {
+	public DatagramPacket SessionWrite(String sessionID, InetAddress destinationAddr, int version, int expirationTime, String data) throws IOException {
 		//should return <found_version, data>
 		//generate unique id for call
 		DatagramSocket rpcSocket = new DatagramSocket();
@@ -271,7 +269,7 @@ public class Server extends Thread {
 							   + version + "_" 
 							   + expirationTime + "_"
 							   + data;
-		System.out.println("sessioWrite outBufferInfo: " + outBufferInfo);
+		System.out.println("sessionWrite outBufferInfo: " + outBufferInfo);
 		int i = 0;
 		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
 			outBuf[i] = c;
@@ -281,11 +279,11 @@ public class Server extends Thread {
 		//send out DatagramPacket to each destAddress or server with sessionID
 		//fix destination id: not InetAddress.getLocalHost()
 		//but need to look up actual server location from session table which uses sessionID as key
-		InetAddress[] destAddress = getDestinationAddr();
-		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destAddress[0], portProj1bRPC);
+		DatagramPacket sendPkt = new DatagramPacket(outBuf, i, destinationAddr, portProj1bRPC);
 		rpcSocket.send(sendPkt);
 		byte[] inBuf = new byte[maxSizePacket];
 		DatagramPacket recvPkt = new DatagramPacket(inBuf, inBuf.length);
+		rpcSocket.setSoTimeout(5 * 1000);
 		try {
 			do {
 				recvPkt.setLength(inBuf.length);
@@ -295,10 +293,14 @@ public class Server extends Thread {
 		} catch(SocketTimeoutException stoe) {
 			// timeout 
 			// update view that unsuccessful write (change to DOWN)
-			viewTable.replace(destAddress.toString(), viewTable.get(destAddress.toString()).updateDOWNTime());
+			String destinationAddrStr = destinationAddr.toString().replaceAll("[^\\d.]", "");
+			if (viewTable.contains(destinationAddrStr))
+				viewTable.replace(destinationAddrStr, viewTable.get(destinationAddrStr).updateDOWNTime());
+			else {
+				viewTable.put(destinationAddrStr, new View(destinationAddrStr, 1));
+			}
 			recvPkt = null;
 		} catch(IOException ioe) {
-			// Are we supposed to be resending it??????
 			System.out.println("IOException, trying to resend once more");
 			try {
 				do {
@@ -307,7 +309,12 @@ public class Server extends Thread {
 				} while(!callID.equals(getCallID(recvPkt.getData())));
 			} catch(SocketTimeoutException stoe) {
 				// timeout 
-				viewTable.replace(destAddress.toString(), viewTable.get(destAddress.toString()).updateDOWNTime());
+				String destinationAddrStr = destinationAddr.toString().replaceAll("[^\\d.]", "");
+				if (viewTable.contains(destinationAddrStr))
+					viewTable.replace(destinationAddrStr, viewTable.get(destinationAddrStr).updateDOWNTime());
+				else {
+					viewTable.put(destinationAddrStr, new View(destinationAddrStr, 1));
+				}
 				recvPkt = null;
 			}
 		}
@@ -329,7 +336,7 @@ public class Server extends Thread {
 		//return datagramPacket acknowledging the write
 		String callID = getCallID(requestData);
 		byte[] outBuf = new byte[maxSizePacket];
-		//fill outBuf with [ callID, "acknowledged" ]
+		//fill outBuf with [ callID ]
 		String outBufferInfo = callID;
 		int i = 0;
 		for(byte c : outBufferInfo.getBytes(Charset.forName("UTF-8"))){
@@ -385,7 +392,12 @@ public class Server extends Thread {
 				} while (!callID.equals(getCallID(recvPkt.getData())));
 			} catch(SocketTimeoutException stoe) {
 				// timeout
-				viewTable.replace(returnAddr, viewTable.get(returnAddr).updateDOWNTime());
+				String destinationAddrStr = returnAddr.toString().replaceAll("[^\\d.]", "");
+				if (viewTable.contains(destinationAddrStr))
+					viewTable.replace(destinationAddrStr, viewTable.get(destinationAddrStr).updateDOWNTime());
+				else {
+					viewTable.put(destinationAddrStr, new View(destinationAddrStr, 1));
+				}
 				recvPkt = null;
 			} catch(IOException ioe) {
 				System.out.println("IOException!!");
@@ -479,7 +491,11 @@ public class Server extends Thread {
 				} while(!callID.equals(getCallID(recvPkt.getData())));
 			} catch(SocketTimeoutException stoe) {
 				// timeout 
-				viewTable.replace(destAddress.toString(), viewTable.get(destAddress.toString()).updateDOWNTime());
+				if (viewTable.contains(destAddress.toString()))
+					viewTable.replace(destAddress.toString(), viewTable.get(destAddress.toString()).updateDOWNTime());
+				else {
+					viewTable.put(destAddress.toString(), new View(destAddress.toString(), 1));
+				}
 				recvPkt = null;
 			} catch(IOException ioe) {
 				System.out.println("IOException, trying to resend once more");
@@ -534,7 +550,10 @@ public class Server extends Thread {
 		ReplaceableAttribute a;
 
 		for (Entry<String, View> entry : viewTableKeys) {
-			a = new ReplaceableAttribute(entry.getKey(), entry.getValue().toString(), true);
+			a = new ReplaceableAttribute();
+			a.setName(entry.getKey());
+			a.setValue(entry.getValue().toString());
+			a.setReplace(true);
 			sendInfo.add(a);
 		}
 		
@@ -569,21 +588,22 @@ public class Server extends Thread {
 		return (int) Math.ceil(viewTable.size() / numViewsInPacket);
 	}
 	
-	public static InetAddress[] getDestinationAddr() {
-		String cookieMetadata = Project1a.repeatVisitor.getValue();
-		InetAddress primaryID;
-		InetAddress backupID;
-		try {
-			primaryID = InetAddress.getByName(cookieMetadata.split("_")[3]);
-			backupID = InetAddress.getByName(cookieMetadata.split("_")[4]);
-			InetAddress[] destAddr = {primaryID, backupID};
-			return destAddr;
-		} catch (UnknownHostException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-		
-		return null;
-		 
-	}
+	public String getOwnServerID() {
+		  Process p;
+		  String ownAddr = "";
+		  try {
+			  p = Runtime.getRuntime().exec("/opt/aws/bin/ec2-metadata --public-ipv4");
+			  int returnCode = p.waitFor();
+			  if (returnCode == 0) {
+				  BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+				  String ipStr = r.readLine();
+				  ownAddr = ipStr.split(":")[1].trim();
+				  ownAddr = ownAddr.replaceAll("[^\\d.]", "");
+			  }
+		  } catch (IOException | InterruptedException e1) {
+				e1.printStackTrace();
+		  }
+		  
+		  return ownAddr;
+	  }
 }

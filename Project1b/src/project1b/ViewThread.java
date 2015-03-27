@@ -11,11 +11,11 @@ public class ViewThread extends Thread {
 	public void run() {
 		while (true) {
 			
-			try {
+			/*try {
 				Server.ExchangeViews();
 			} catch (IOException e1) {
 				e1.printStackTrace();
-			}
+			}*/
 			
 			try {
 				sleep ( (GOSSIP_SECS / 2) + generator.nextInt( GOSSIP_SECS ) );
