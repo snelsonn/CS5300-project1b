@@ -1,6 +1,5 @@
 package project1b;
 
-import java.io.IOException;
 import java.util.Random;
 
 public class ViewThread extends Thread {

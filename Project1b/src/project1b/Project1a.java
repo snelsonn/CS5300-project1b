@@ -1,16 +1,14 @@
 package project1b;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.DatagramPacket;
 import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map.Entry;
-import java.util.Map;
 import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.servlet.ServletException;
@@ -19,10 +17,6 @@ import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-
-import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.services.simpledb.AmazonSimpleDB;
-import com.amazonaws.services.simpledb.AmazonSimpleDBClient;
 
 @WebServlet("/")
 public class Project1a extends HttpServlet {
@@ -62,8 +56,9 @@ public class Project1a extends HttpServlet {
 
 		out = response.getWriter();
 		
+		out.println("Views<br/>");
 		for(Entry<String,View> s : Server.viewTable.entrySet()) {
-			out.println(s.getKey() + " " + s.getValue() + "<br/>");
+			out.println("Server: " + s.getKey() + ", value: " + s.getValue() + "<br/>");
 		}
 
 		// Find 5300 cookie if it exists
@@ -90,7 +85,6 @@ public class Project1a extends HttpServlet {
 
 		// 5300 cookie not found so must be new user or logged out
 		// Create new session and write sessionID to table
-		// Need to change servletName to be ServerIDprimary, and ServerIDbackup
 		if(request.getParameter("Logout") != null || repeatVisitor == null){
 
 			// First write session to own table
@@ -106,18 +100,21 @@ public class Project1a extends HttpServlet {
 			// Pick this server at random from viewTable
 			// Set up datagramPacket for backup server's write
 			DatagramPacket writeResponse = null;
-			String destAddressStr;
+			String destAddressStr = "null";
 
-			// Continuously try to send to a random backup server until succeeds
-			do {
-				int j = new Random().nextInt(Server.viewTable.size());
-				destAddressStr =  Server.viewTable.keySet().toArray(new String[0])[j];
-				if (!destAddressStr.equals("simpleDB") && !destAddressStr.equals(servletName)) {
-					writeResponse = server.SessionWrite(newSession.sessionID, InetAddress.getByName(destAddressStr), newSession.version, newSession.expirationTimeStamp, newSession.message);
-				} else {
-					destAddressStr = "null";
+			// attempt to find a backup server, if possible. If not, set as "null"
+			List<String> servers = new ArrayList<String>(Arrays.asList(Server.viewTable.keySet().toArray(new String[0])));
+			servers.removeAll(Arrays.asList("simpleDB", servletName));
+			for(int i = 0; i < servers.size(); i++){
+				int j = new Random().nextInt(servers.size());
+				destAddressStr = servers.get(j);
+				writeResponse = server.SessionWrite(newSession.sessionID, InetAddress.getByName(destAddressStr), newSession.version, newSession.expirationTimeStamp, newSession.message);
+				if(writeResponse != null){
+					break;
+				} else{
+					destAddressStr = "null";				
 				}
-			} while (writeResponse != null && Server.viewTable.size() > 2); // Can only have a backup server if there exists more than one server
+			}
 
 			out.println("After new user: " + destAddressStr + " ");
 			
@@ -184,20 +181,9 @@ public class Project1a extends HttpServlet {
 							}
 						} // Otherwise, server knows it timed out, but already handled that in viewTable in Server.java
 						out.println("After local = primary: " + sessionMessage[3]);
-					
-						DatagramPacket readResponsePrimary = server.SessionRead(sessionMessage[0], InetAddress.getByName(sessionMessage[2]));
-						
-						// If successful read from backup server
-						if (readResponsePrimary != null){
-							String[] readPrimResponseData = new String(readResponsePrimary.getData()).trim().split("_");
-							
-							if (readPrimResponseData[1].equals("found")){
-								serverPrimaryDiscardTime = readPrimResponseData[4];
-								serverPrimaryExpirationTime = "" + (Integer.parseInt(readPrimResponseData[4]) - (int)(System.currentTimeMillis()/1000));
-							}
-						} // Otherwise, server knows it timed out, but already handled that in viewTable in Server.java
-
 					}
+					serverPrimaryDiscardTime = "" + m.expirationTimeStamp;
+					serverPrimaryExpirationTime = "" + (m.expirationTimeStamp - (int)(System.currentTimeMillis()/1000));
 				}
 			} 
 			
@@ -225,19 +211,8 @@ public class Project1a extends HttpServlet {
 						
 						out.println("After local = backup: " + sessionMessage[2]);
 					} 
-					
-					DatagramPacket readResponseBackup = server.SessionRead(sessionMessage[0], InetAddress.getByName(sessionMessage[3]));
-					
-					// If successful read from backup server
-					if (readResponseBackup != null){
-						String[] readResponseData = new String(readResponseBackup.getData()).trim().split("_");
-						
-						if (readResponseData[1].equals("found")){
-							serverBackupDiscardTime = readResponseData[4];
-							serverBackupExpirationTime = "" + (Integer.parseInt(readResponseData[4]) - (int)(System.currentTimeMillis()/1000));
-						}
-					} // Otherwise, server knows it timed out, but already handled that in viewTable in Server.java
-
+					serverBackupDiscardTime = "" + m.expirationTimeStamp;
+					serverBackupExpirationTime = "" + (m.expirationTimeStamp - (int)(System.currentTimeMillis()/1000));
 				}
 			} 
 			
@@ -325,24 +300,23 @@ public class Project1a extends HttpServlet {
 			// Since there is no backup server right now, need to pick some random serverID from viewTable
 			// and write to its sessionTable
 			DatagramPacket writeResponse = null;
-			String backupServlet = "null";
-			String[] viewTableArr = Server.viewTable.keySet().toArray(new String[0]);	
-			String destAddressStr;
+			String destAddressStr = "null";
 			
-			do {
-				int j = new Random().nextInt(Server.viewTable.size());
-				destAddressStr = viewTableArr[j];
-				out.println("Finding random: " + destAddressStr);
-				if (!destAddressStr.equals("simpleDB") && !destAddressStr.equals(servletName)) {
-					writeResponse = server.SessionWrite(newSession.sessionID, InetAddress.getByName(destAddressStr), newSession.version, newSession.expirationTimeStamp, newSession.message);
-				} else {
-					destAddressStr = "null";
+			List<String> servers = new ArrayList<String>(Arrays.asList(Server.viewTable.keySet().toArray(new String[0])));
+			servers.removeAll(Arrays.asList("simpleDB", servletName));
+			for(int i = 0; i < servers.size(); i++){
+				int j = new Random().nextInt(servers.size());
+				destAddressStr = servers.get(j);
+				writeResponse = server.SessionWrite(newSession.sessionID, InetAddress.getByName(destAddressStr), newSession.version, newSession.expirationTimeStamp, newSession.message);
+				if(writeResponse != null){
+					break;
+				} else{
+					destAddressStr = "null";				
 				}
-			} while (writeResponse != null && Server.viewTable.size() > 2); // Can only have a backup server if there exists more than one server
-
+			}
 			out.println("After changing version: " + destAddressStr + " ");
 			
-			backupServlet = destAddressStr;
+			String backupServlet = destAddressStr;
 
 			// Cookie value is sessionID_version number_serverNamePrimary_serverNameBackup
 			String cookieValue = sessionMessage[0] + "%" + (Integer.parseInt(sessionMessage[1]) + 1) + "%" + servletName + "%" + backupServlet;
